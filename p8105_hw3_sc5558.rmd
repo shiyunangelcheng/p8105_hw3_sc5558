@@ -121,41 +121,290 @@ This table shows that Pink Lady Apples are generally ordered earlier in the day,
 ### Problem 2 
 
 This Problem uses the Zillow datasets introduced in Homework 2. Both datasets are available here. Import, clean, and otherwise tidy these datasets.
+
 ```{r}
-# Load and clean Zillow data (wide format)
-zori_df = read_csv("./data/zilow_data/Zip_zori_uc_sfrcondomfr_sm_month_NYC.csv") |>
-  janitor::clean_names() |>
+# Import Zillow price data
+zori_df = 
+  read_csv("./data/zillow_data/Zip_zori_uc_sfrcondomfr_sm_month_NYC.csv") |> 
   pivot_longer(
-    cols = matches("^20"),
-    names_to = "ym",
-    values_to = "zori"
-  ) |>
-  rename(zip = region_name) |>
+    cols = matches("^20"),  # columns like "2015-01-31", etc.
+    names_to = "month",
+    values_to = "price"
+  ) |> 
+  janitor::clean_names() |> 
+  rename(zip_code = region_name) |> 
   mutate(
-    zip = as.character(zip),
-    ym = lubridate::ym(ym),
-    year = lubridate::year(ym)
-  )
+    month = lubridate::ymd(month),
+    year = lubridate::year(month),
+    zip_code = as.numeric(zip_code)
+  ) |> 
+  select(-county_name)  # drop unused column
 
-# Load and clean ZIP–borough lookup
-zipcode_df = read_csv("./data/zilow_data/Zip Codes.csv") |>
-  janitor::clean_names() |>
-  rename(zip = zipcode) |>
-  mutate(zip = as.character(zip))
+# Import and clean ZIP code → borough mapping
+zipcode_df = 
+  read_csv("./data/zillow_data/Zip Codes.csv") |> 
+  janitor::clean_names() |> 
+  filter(
+    !(zip_code == 10463 & county == "New York"),
+    !(zip_code == 11201 & county == "New York")
+  ) |> 
+  mutate(
+    borough = dplyr::case_match(
+      county,
+      "Bronx" ~ "Bronx",
+      "Kings" ~ "Brooklyn",
+      "New York" ~ "Manhattan",
+      "Queens" ~ "Queens",
+      "Richmond" ~ "Staten Island"
+    )
+  ) |> 
+  select(zip_code, borough, neighborhood)
 
-# Merge ZORI data with ZIP code lookup
-zori_df = zori_df |>
-  inner_join(zipcode_df, by = "zip") |>
-  relocate(county, neighborhood, .after = zip)
+# Join datasets
+nyc_price_df = 
+  left_join(zori_df, zipcode_df, by = "zip_code")
 ```
-
-
 There are 116 months between January 2015 and August 2024. How many ZIP codes are observed 116 times? How many are observed fewer than 10 times? Why are some ZIP codes are observed rarely and others observed in each month?
+```{r}
+zip_months_df = 
+  nyc_price_df |>
+  count(zip_code, name = "n_months")
+
+n_full_coverage = zip_months_df |>
+  filter(n_months == 116) |>
+  nrow()
+
+n_very_sparse = zip_months_df |>
+  filter(n_months < 10) |>
+  nrow()
+```
+There are `r n_full_coverage` ZIP codes observed in all 116 months between January 2015 and August 2024. 
+There are `r n_very_sparse` ZIP codes observed fewer that 10 times. 
+Some ZIP codes are observed rarely maybe due to to these reasons: 
+1. There are commercial or government buildings instead of residential areas. 
+2. There are areas with insufficient rental market coverage. 
+However, our data shows that ZIps observed across all 116 months are typically stable, residential zones with concsistent Zillow rental date over time. 
 
 Create a reader-friendly table showing the average rental price in each borough and year (not month). Comment on trends in this table.
+```{r}
+borough_year_df = 
+  nyc_price_df |>
+  group_by(borough, year) |>
+  summarize(mean_price = mean(price, na.rm = TRUE)) |>
+  ungroup()
+
+borough_year_df |>
+  gt(groupname_col = "borough") |>
+  cols_label(
+    year = "Year",
+    mean_price = "Mean Rent (ZORI)"
+  ) |>
+  fmt_number(columns = vars(mean_price), decimals = 0) |>
+  tab_header(title = "Average ZORI by Borough and Year")
+```
+Based on this stable, we can see that all boroughs presents a steadily increasing trend for the average rental price, especially post 2021. Manhattan's rent ranks highest, while Bronx and Staten Island remain the most affordable. 
 
 Make a plot showing NYC Rental Prices within ZIP codes for all available years. Your plot should facilitate comparisons across boroughs. Comment on any significant elements of this plot.
+```{r}
+zip_trend_plot = 
+  nyc_price_df |>
+  ggplot(aes(x = month, y = price, group = zip_code)) +
+  geom_line(alpha = 0.3, color = "gray40") +
+  facet_wrap(~ borough, scales = "free_y") +
+  labs(
+    title = "ZIP-Level ZORI Trends by Borough",
+    x = NULL,
+    y = "ZORI"
+  ) +
+  theme_minimal()
+```
+The borough trends presents a dip in early COVID-19 period (2020-2021) but was rebounded quickly in 2022 toward 2024.
 
 Compute the average rental price within each ZIP code over each month in 2023. Make a reader-friendly plot showing the distribution of ZIP-code-level rental prices across boroughs; put differently, your plot should facilitate the comparison of the distribution of average rental prices across boroughs. Comment on this plot.
+```{r}
+zip_month_2023_df = 
+  nyc_price_df |>
+  filter(year == 2023) |>
+  group_by(zip_code, borough, month) |>
+  summarize(monthly_avg_price = mean(price, na.rm = TRUE)) |>
+  ungroup()
+zip_dist_plot = 
+  zip_month_2023_df |>
+  ggplot(aes(x = monthly_avg_price, fill = borough)) +
+  geom_histogram(bins = 30, alpha = 0.7) +
+  facet_wrap(~ borough, scales = "free_y") +
+  labs(
+    title = "Monthly ZIP-Level Rent Distribution (2023)",
+    x = "Average ZORI (USD)",
+    y = "ZIP × Month Observations"
+  ) +
+  theme_minimal() +
+  guides(fill = "none")
+
+```
+This plot shows how ZIP-level monthly average rental prices in 2023 varied across boroughs. Manhattan ZIPs are tightly distributed at the higher end of the rent spectrum, while the Bronx and Staten Island show broader, lower distributions. The repeated monthly values create denser histograms, reflecting both within-ZIP variation and borough-wide patterns.
 
 Combine the two previous plots into a single graphic, and export this to a results folder in your repository.
+```{r}
+combined_plot = zip_trend_plot / zip_dist_plot +
+  plot_annotation(
+    title = "NYC Rental Trends and 2023 Distributions",
+    subtitle = "Top: ZIP-level trends · Bottom: ZIP-level rent distributions",
+    theme = theme(plot.title = element_text(size = 16, face = "bold"))
+  )
+
+# Save to results/ folder
+dir.create("results", showWarnings = FALSE)
+
+ggsave(
+  filename = "results/problem2_combined_plot.png",
+  plot = combined_plot,
+  width = 11,
+  height = 10,
+  dpi = 300
+)
+```
+### Problem 3 
+
+```{r}
+library(tidyverse)
+library(janitor)
+library(lubridate)
+library(gt)
+library(scales)
+
+demo_path  <- "data/nhanes_covar.csv"
+accel_path <- "data/nhanes_accel.csv"
+
+## 1) Find the true header row in the demographics file
+demo0    <- readr::read_csv(demo_path, col_names = FALSE, show_col_types = FALSE)
+hdr_row  <- which(demo0[[1]] %in% c("SEQN","seqn"))[1]
+stopifnot(!is.na(hdr_row))
+
+## 2) Re-read demographics with the correct header, then clean
+header_vec <- as.character(unlist(demo0[hdr_row, ]))
+nhanes_demo <- readr::read_csv(
+  demo_path,
+  skip = hdr_row,                 # skip the header row itself
+  col_names = header_vec,
+  show_col_types = FALSE
+) |>
+  janitor::clean_names() |>       # -> seqn, sex, age, bmi, education
+  mutate(
+    seqn      = as.integer(seqn),
+    age       = suppressWarnings(as.numeric(age)),
+    bmi       = suppressWarnings(as.numeric(bmi)),
+    sex       = suppressWarnings(as.integer(sex)),
+    education = suppressWarnings(as.integer(education))
+  ) |>
+  mutate(
+    # Your file has 3 education levels (per banner rows)
+    education = factor(
+      education,
+      levels = c(1, 2, 3),
+      labels = c("Less than high school", "High school equivalent", "More than high school"),
+      ordered = TRUE
+    ),
+    sex = factor(sex, levels = c(1, 2), labels = c("Male", "Female"))
+  ) |>
+  filter(age >= 21) |>
+  drop_na(seqn, sex, age, bmi, education)
+
+## 3) Accelerometer: tidy to long
+nhanes_accel_long <- readr::read_csv(accel_path, show_col_types = FALSE) |>
+  janitor::clean_names() |>
+  rename(seqn = any_of(c("seqn","SEQN","Seqn"))) |>
+  mutate(seqn = as.integer(seqn)) |>
+  pivot_longer(
+    cols = starts_with("min"),
+    names_to = "minute",
+    values_to = "mims"
+  ) |>
+  mutate(
+    minute     = readr::parse_number(minute),                  # 1..1440
+    time_of_day = as.POSIXct((minute - 1) * 60, origin = "1970-01-01", tz = "UTC")
+  )
+
+## 4) Merge
+nhanes_df <- nhanes_accel_long |>
+  inner_join(nhanes_demo, by = "seqn")
+```
+Table: men vs women by edcuation 
+```{r}
+nhanes_demo |>
+  count(education, sex, name = "n") |>
+  tidyr::pivot_wider(names_from = sex, values_from = n, values_fill = 0) |>
+  arrange(education) |>
+  gt() |>
+  tab_header(title = md("**Participants by Education and Sex**")) |>
+  fmt_number(columns = everything(), decimals = 0) |>
+  cols_label(education = "Education") |>
+  tab_source_note(md("Counts after excluding age < 21 and missing demographics."))
+```
+This sample is fairly balanced with 56 men and 59 women with more than high school education, 27 men and 28 women with less than high school. THe one noticeable inbalances is the high school equivalent category. Overall, we see that education distribution skews toward the more thatn high school group. 
+
+Age distribution by sex within education 
+```{r}
+ggplot(nhanes_demo, aes(x = age, fill = sex, color = sex)) +
+  geom_histogram(alpha = 0.35, bins = 25, position = "identity") +
+  facet_wrap(~ education, ncol = 3, scales = "free_y") +
+  labs(
+    title = "Age Distributions by Education and Sex",
+    x = "Age (years)",
+    y = "Count",
+    fill = "Sex", color = "Sex"
+  ) +
+  theme(panel.grid.minor = element_blank())
+```
+The age distribution suggests that sex and education are not fully independent; certain education levels have different age-sex compositions, which serves a potential influence in activity trends. 
+
+Total activity per participant
+```{r}
+total_activity_df <- readr::read_csv(accel_path, show_col_types = FALSE) |>
+  janitor::clean_names() |>
+  rename(seqn = any_of(c("seqn","SEQN","Seqn"))) |>
+  mutate(
+    seqn = as.integer(seqn),
+    total_activity = rowSums(across(starts_with("min")), na.rm = TRUE)
+  ) |>
+  select(seqn, total_activity) |>
+  inner_join(nhanes_demo, by = "seqn")
+
+ggplot(total_activity_df, aes(x = age, y = total_activity, color = sex)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(se = FALSE) +
+  facet_wrap(~ education, ncol = 3, scales = "free_y") +
+  scale_y_continuous(labels = label_comma()) +
+  labs(
+    title = "Total Daily Activity vs Age, by Education and Sex",
+    x = "Age (years)",
+    y = "Total MIMS (sum over 1440 minutes)",
+    color = "Sex"
+  ) +
+  theme(panel.grid.minor = element_blank())
+```
+Across all education groups, I can tell that the total daily activity declines with age, especially after midlife. Overall, the pattern between male and female is similar, but females in the high school equivalent and more than high school group maintain higher overall activity level than males. In the more than hi school group. activity levels are higher and more stable across age, with both sexes showing smaller declines compared to other groups. I can conclude that education appears to buffer age-related decline. 
+
+24-hour profiles (three panels by education; color = sex )
+```{r}
+minute_profiles <- nhanes_df |>
+  group_by(education, sex, minute) |>
+  summarise(mean_mims = mean(mims, na.rm = TRUE), .groups = "drop") |>
+  mutate(time_of_day = as.POSIXct((minute - 1) * 60, origin = "1970-01-01", tz = "UTC"))
+
+ggplot(minute_profiles, aes(x = time_of_day, y = mean_mims, color = sex)) +
+  geom_line(alpha = 0.5) +
+  geom_smooth(se = FALSE, linewidth = 0.9) +
+  facet_wrap(~ education, ncol = 3, scales = "free_y") +
+  scale_x_datetime(date_labels = "%H:%M", breaks = scales::breaks_width("6 hours")) +
+  labs(
+    title = "Average 24-Hour Activity Profiles by Education (Color = Sex)",
+    x = "Clock Time",
+    y = "Mean MIMS",
+    color = "Sex"
+  ) +
+  theme(panel.grid.minor = element_blank())
+```
+Across all education levels, activity is very low overnight, rise sharply i the morning, and peaks during the daytime hours before declining again in the evening. This is consistent with sleep-wake cycles. 
+Men and women follow the same daily rhythm, but women consistently show slightly higher mean activity levels during the day, especially in the more than high school and high school equivalent groups. 
+The more than high school group maintains the highest sustained daytime activity, suggesting education is associated with not just total activity but also with steadier levels across the day.
